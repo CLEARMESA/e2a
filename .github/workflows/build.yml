@@ -13,50 +13,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Android & Build Dependencies
+      - name: Install Build Tools and Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential android-sdk aapt zipalign apksigner make gcc
+          sudo apt-get install -y build-essential gcc make android-sdk aapt zipalign apksigner
 
-      - name: Make Build Scripts Executable
+      - name: Compile e2a Tool from Source
         run: |
           chmod -R +x .
-
-      - name: Run e2a Build Command
-        run: |
-          # Detect available build launcher or fallback to make/sh execution
-          if [ -f "./e2a" ]; then
-            ./e2a --input "${{ github.event.inputs.app_filename }}" --output output.apk
-          elif [ -f "./build.sh" ]; then
-            ./build.sh "${{ github.event.inputs.app_filename }}"
-          elif [ -f "Makefile" ] || [ -f "makefile" ]; then
+          if [ -f "Makefile" ] || [ -f "makefile" ]; then
             make
           else
-            echo "Searching repository structure for executable build files..."
-            find . -maxdepth 2 -name "*.sh" -exec chmod +x {} \;
-            ls -la
+            # Fallback: Compile main C files directly if Makefile is missing
+            gcc -o e2a *.c || gcc -o e2a src/*.c || true
           fi
 
-      - name: Prepare and Sign APK
+      - name: Run e2a to Package APK
         run: |
-          # Generate debug signing key
-          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 || true
+          # Locate compiled binary or executable script
+          if [ -f "./e2a" ]; then
+            ./e2a "${{ github.event.inputs.app_filename }}" -o output.apk
+          elif [ -f "./main" ]; then
+            ./main "${{ github.event.inputs.app_filename }}" -o output.apk
+          else
+            echo "Displaying directory files for debugging:"
+            ls -la
+            echo "Error: Failed to find compiled e2a executable."
+            exit 1
+          fi
 
-          # Find generated APK file and align/sign
-          APK_FILE=$(find . -name "*.apk" | head -n 1)
+      - name: Sign APK File
+        run: |
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 || true
+          
+          APK_FILE=$(find . -maxdepth 2 -name "*.apk" | head -n 1)
           if [ -n "$APK_FILE" ]; then
             zipalign -v 4 "$APK_FILE" output_signed.apk || cp "$APK_FILE" output_signed.apk
             apksigner sign --ks debug.keystore --ks-pass pass:android output_signed.apk || true
           else
-            echo "No APK was generated. Please verify input filename."
+            echo "No APK was created."
             exit 1
           fi
 

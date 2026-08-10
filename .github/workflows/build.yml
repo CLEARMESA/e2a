@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       app_filename:
-        description: 'Name of your uploaded .exe or .zip file (e.g. app.exe)'
+        description: 'Name of your uploaded .exe or .zip file (e.g., app.exe or game.zip)'
         required: true
         default: 'app.exe'
 
@@ -21,39 +21,49 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Android & Packaging Tools
+      - name: Install Android Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential android-sdk aapt zipalign apksigner apktool
+          sudo apt-get install -y apktool aapt zipalign apksigner wget unzip
 
-      - name: Grant Permissions to Scripts
+      - name: Package EXE into Android APK Container
         run: |
-          chmod -R +x .
+          INPUT_FILE="${{ github.event.inputs.app_filename }}"
 
-      - name: Run e2a Conversion
-        run: |
-          # Detect shell script entry points
-          if [ -f "./e2a.sh" ]; then
-            ./e2a.sh --input "${{ github.event.inputs.app_filename }}" --output output.apk || ./e2a.sh "${{ github.event.inputs.app_filename }}"
-          elif [ -f "./build.sh" ]; then
-            ./build.sh "${{ github.event.inputs.app_filename }}"
-          else
-            echo "Listing files to locate conversion script:"
+          if [ ! -f "$INPUT_FILE" ]; then
+            echo "Error: Uploaded file '$INPUT_FILE' not found in repository root."
+            echo "Available files in repository:"
             ls -la
-            echo "Error: Could not locate e2a.sh or build script."
             exit 1
+          fi
+
+          echo "Downloading WineBOX Base Template..."
+          wget -q -O base_container.apk https://github.com/winebox-android/winebox/releases/download/v1.0/base.apk || \
+          wget -q -O base_container.apk https://github.com/brunodev85/winlator/releases/download/v7.1.3/Winlator_7.1.3.apk || true
+
+          if [ ! -f "base_container.apk" ]; then
+            echo "Creating fallback standalone APK package..."
+            mkdir -p apk_structure/assets/app/
+            cp "$INPUT_FILE" apk_structure/assets/app/
+          else
+            echo "Unpacking APK template..."
+            apktool d base_container.apk -o apk_structure -f
+            mkdir -p apk_structure/assets/app/
+            cp "$INPUT_FILE" apk_structure/assets/app/
+            apktool b apk_structure -o raw_output.apk
           fi
 
       - name: Sign APK File
         run: |
           keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 || true
           
-          APK_FILE=$(find . -maxdepth 3 -name "*.apk" | head -n 1)
-          if [ -n "$APK_FILE" ]; then
-            zipalign -v 4 "$APK_FILE" output_signed.apk || cp "$APK_FILE" output_signed.apk
+          TARGET_APK=$(find . -maxdepth 2 -name "*.apk" ! -name "base_container.apk" | head -n 1)
+
+          if [ -n "$TARGET_APK" ]; then
+            zipalign -v 4 "$TARGET_APK" output_signed.apk || cp "$TARGET_APK" output_signed.apk
             apksigner sign --ks debug.keystore --ks-pass pass:android output_signed.apk || true
           else
-            echo "Error: No APK file was generated."
+            echo "Error: No output APK could be constructed."
             exit 1
           fi
 

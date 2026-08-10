@@ -1,0 +1,44 @@
+name: Build APK via e2a
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_filename:
+        description: 'Name of your uploaded .exe or .zip file (e.g. app.exe)'
+        required: true
+        default: 'app.exe'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Android & Build Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential android-sdk aapt zipalign apksigner
+
+      - name: Run e2a Build Script
+        run: |
+          chmod +x *.sh
+          ./e2a.sh --input "${{ github.event.inputs.app_filename }}" --output output.apk || bash build.sh
+
+      - name: Sign APK
+        run: |
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000
+          zipalign -v 4 output.apk output_signed.apk || cp output.apk output_signed.apk
+          apksigner sign --ks debug.keystore --ks-pass pass:android output_signed.apk || true
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: converted-apk
+          path: "*.apk"

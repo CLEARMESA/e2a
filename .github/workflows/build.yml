@@ -13,32 +13,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Install Android & Build Dependencies
         run: |
-          sudo apt update
-          sudo apt install -y build-essential android-sdk aapt zipalign apksigner
+          sudo apt-get update
+          sudo apt-get install -y build-essential android-sdk aapt zipalign apksigner make gcc
 
-      - name: Run e2a Build Script
+      - name: Make Build Scripts Executable
         run: |
-          chmod +x *.sh
-          ./e2a.sh --input "${{ github.event.inputs.app_filename }}" --output output.apk || bash build.sh
+          chmod -R +x .
 
-      - name: Sign APK
+      - name: Run e2a Build Command
         run: |
-          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000
-          zipalign -v 4 output.apk output_signed.apk || cp output.apk output_signed.apk
-          apksigner sign --ks debug.keystore --ks-pass pass:android output_signed.apk || true
+          # Detect available build launcher or fallback to make/sh execution
+          if [ -f "./e2a" ]; then
+            ./e2a --input "${{ github.event.inputs.app_filename }}" --output output.apk
+          elif [ -f "./build.sh" ]; then
+            ./build.sh "${{ github.event.inputs.app_filename }}"
+          elif [ -f "Makefile" ] || [ -f "makefile" ]; then
+            make
+          else
+            echo "Searching repository structure for executable build files..."
+            find . -maxdepth 2 -name "*.sh" -exec chmod +x {} \;
+            ls -la
+          fi
+
+      - name: Prepare and Sign APK
+        run: |
+          # Generate debug signing key
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 || true
+
+          # Find generated APK file and align/sign
+          APK_FILE=$(find . -name "*.apk" | head -n 1)
+          if [ -n "$APK_FILE" ]; then
+            zipalign -v 4 "$APK_FILE" output_signed.apk || cp "$APK_FILE" output_signed.apk
+            apksigner sign --ks debug.keystore --ks-pass pass:android output_signed.apk || true
+          else
+            echo "No APK was generated. Please verify input filename."
+            exit 1
+          fi
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: converted-apk
-          path: "*.apk"
+          path: output_signed.apk
